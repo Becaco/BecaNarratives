@@ -1,1 +1,24 @@
-This repository includes some related materials to our devlopped tool  that  genarates Multi-Modal Narratives of Cultural Objects from Knowledge Graphs and LLMs 
+
+
+> A tool that generates rich multi-modal narratives for cultural objects by combining knowledge-graph data with large language models to produce coherent, informative stories.
+
+
+## 🚀 What is this?
+
+BecaNarratives transforms dry museum object data into engaging, audio-ready stories using AI. It connects to your Neo4j knowledge graph, extracts object information, and generates narrative stories perfect for museum audio guides.
+
+**Before:** "Object ID: MUD_2024_001, Material: Bronze, Date: 500 BCE"
+
+**After:** "Picture a gleaming bronze vessel, roughly the size of a small bowl, its surface smooth as polished stone. Crafted over 2,500 years ago in ancient Mexico, this piece tells the story of..."
+
+
+## 🛠️ Project Structure
+
+
+BecaNarratives/
+├── codes/
+│   ├── story_generator.py      # Main script
+│   ├── extract_data.py         # Neo4j extractor
+│   └── README.md               # Detailed documentation
+├── evaluation_pages/           # Evaluation materials
+└── README.md                   # This file
