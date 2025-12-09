@@ -4,10 +4,9 @@
 
 - 🤖 **5 AI Models**: Groq, OpenAI, Gemini, Claude, Phi-4
 - 🗄️ **Neo4j Integration**: Direct extraction from knowledge graphs
-- 💾 **Smart Saving**: Auto-saves every 10 objects
-- 🔄 **Resume Support**: Continue from where you left off
-- 📊 **Excel Output**: Beautiful formatted spreadsheets
-- ⚡ **Fast & Reliable**: Automatic retry and rate limit handling
+- 💾 **Auto Saving**: Auto-saves every 10 objects
+
+
 
 ---
 
