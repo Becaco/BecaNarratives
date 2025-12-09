@@ -9,7 +9,7 @@ BecaNarratives transforms dry museum object data into engaging, audio-ready stor
 
 **Before:** "Object ID: MUD_2024_001, Material: Bronze, Date: 500 BCE"
 
-**After:** "Picture a gleaming bronze vessel, roughly the size of a small bowl, its surface smooth as polished stone. Crafted over 2,500 years ago in ancient Mexico, this piece tells the story of..."
+**After:** "Picture a gleaming bronze vessel, roughly the size of a small bowl, its surface smooth as polished stone. Crafted over 2,500 years ago in ancient Greece, this piece tells the story of..."
 
 
 ## 🛠️ Project Structure
