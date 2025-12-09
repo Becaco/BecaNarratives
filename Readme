@@ -5,7 +5,7 @@
 
 ## 🚀 What is this?
 
-BecaNarratives transforms dry museum object data into engaging, audio-ready stories using AI. It connects to your Neo4j knowledge graph, extracts object information, and generates narrative stories perfect for museum audio guides.
+BecaNarratives transforms dry museum object data into engaging stories using AI. It connects to your Neo4j knowledge graph, extracts object information, and generates narrative stories perfect for museum audio guides.
 
 **Before:** "Object ID: MUD_2024_001, Material: Bronze, Date: 500 BCE"
 
