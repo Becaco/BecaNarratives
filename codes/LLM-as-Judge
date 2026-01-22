@@ -1,0 +1,575 @@
+"""
+🎯 LLM-AS-JUDGE - Multi-LLM Evaluation
+Compatible with the Museum Story Generator
+Uses the same providers: Groq, OpenAI, Gemini, Anthropic, Phi4
+"""
+
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Font
+import time
+import os
+import json
+import re
+from typing import Dict, List, Optional
+import numpy as np
+
+# ========== LLM CONFIGURATION (identical to generator) ==========
+
+LLM_CONFIGS = {
+    'groq': {
+        'env_key': 'GROQ_API_KEY',
+        'model': 'llama-3.3-70b-versatile',
+        'library': 'groq'
+    },
+    'openai': {
+        'env_key': 'OPENAI_API_KEY',
+        'model': 'gpt-4o',
+        'library': 'openai'
+    },
+    'gemini': {
+        'env_key': 'GEMINI_API_KEY',
+        'model': 'gemini-2.0-flash-exp',
+        'library': 'google-generativeai'
+    },
+    'anthropic': {
+        'env_key': 'ANTHROPIC_API_KEY',
+        'model': 'claude-sonnet-4-5-20250929',
+        'library': 'anthropic'
+    },
+    'phi4': {
+        'env_key': 'AZURE_API_KEY',
+        'model': 'Phi-4',
+        'library': 'langchain',
+        'base_url': 'https://models.inference.ai.azure.com'
+    }
+}
+
+# ========== EVALUATION PROMPT ==========
+
+EVALUATION_PROMPT = """You are an expert museum curator tasked with rigorously evaluating narrative quality.
+
+OBJECT DESCRIPTION:
+{description}
+
+NARRATIVE TO EVALUATE:
+{narrative}
+
+EVALUATION CRITERIA (rate 1-5, integers only):
+
+C1 - FACTUAL CORRECTNESS: Does the narrative accurately reflect the object's culture, history, and traditions? Penalize even minor factual inaccuracies.
+C2 - LITERARY STYLE: Is the writing style suitable for a museum audience, demonstrating clear structure, engaging language, and appropriate literary devices?
+C3 - ACCESSIBILITY: Can a general audience easily understand the narrative without prior specialized knowledge? Penalize unclear or overly complex sentences.
+C4 - FAITHFULNESS: Does the narrative strictly avoid inventing or assuming unsupported facts? Penalize any hallucinations or unverified claims.
+
+STRICT INSTRUCTIONS:
+1. Be critical and stringent. Avoid rounding up scores. Penalize small factual, style, or clarity issues.
+2. Provide ONLY final scores in valid JSON. Do NOT include explanations or extra text.
+3. Use integer values 1-5 for C1–C4.
+4. Compute "overall_score" as the arithmetic mean of the 4 scores (decimal allowed).
+5. Output ONLY the JSON below, nothing else:
+
+{{
+    "c1_factual_correctness": <integer 1-5>,
+    "c2_literary_style": <integer 1-5>,
+    "c3_accessibility": <integer 1-5>,
+    "c4_faithfulness": <integer 1-5>,
+    "overall_score": <float, average of the 4 scores>
+}}
+
+Output the JSON now:"""
+
+# ========== COLUMN CONFIGURATION ==========
+
+NARRATIVE_COLUMNS = {
+    'Narrative Story': 'Generated_Story',  # Default column from generator
+    'Story_Groq': 'Model_Groq',
+    'Story_OpenAI': 'Model_OpenAI', 
+    'Story_Gemini': 'Model_Gemini',
+    'Story_Claude': 'Model_Claude',
+    'Story_Phi4': 'Model_Phi4'
+}
+
+
+# ========== JUDGE EVALUATOR CLASS ==========
+
+class JudgeEvaluator:
+    """Evaluates narratives using any LLM (same config as StoryGenerator)"""
+    
+    def __init__(self, provider='groq', model=None, api_key=None):
+        self.provider = provider.lower()
+        self.config = LLM_CONFIGS.get(self.provider)
+        
+        if not self.config:
+            raise ValueError(f"Unknown provider: {provider}. Choose from: {list(LLM_CONFIGS.keys())}")
+        
+        self.api_key = api_key or os.getenv(self.config['env_key'])
+        if not self.api_key:
+            raise ValueError(f"API key not found. Set {self.config['env_key']} env variable or pass api_key parameter")
+        
+        self.model = model or self.config['model']
+        self.client = self._init_client()
+    
+    def _init_client(self):
+        """Initialize LLM client (identical to generator)"""
+        if self.config['library'] == 'groq':
+            from groq import Groq
+            return Groq(api_key=self.api_key)
+        
+        elif self.config['library'] == 'openai':
+            from openai import OpenAI
+            return OpenAI(api_key=self.api_key)
+        
+        elif self.config['library'] == 'langchain':
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=self.model,
+                api_key=self.api_key,
+                base_url=self.config.get('base_url'),
+                temperature=0.0
+            )
+        
+        elif self.config['library'] == 'google-generativeai':
+            import google.generativeai as genai
+            genai.configure(api_key=self.api_key)
+            return genai.GenerativeModel(self.model)
+        
+        elif self.config['library'] == 'anthropic':
+            from anthropic import Anthropic
+            return Anthropic(api_key=self.api_key)
+        
+        else:
+            raise ValueError(f"Unknown library: {self.config['library']}")
+    
+    def evaluate(self, narrative: str, description: str, retries=3) -> Dict:
+        """Evaluate a narrative and return scores"""
+        
+        if not narrative or len(str(narrative).strip()) < 10:
+            return {"error": "Narrative too short or empty"}
+        
+        prompt = EVALUATION_PROMPT.format(
+            narrative=str(narrative)[:1500],
+            description=str(description)[:800]
+        )
+        
+        for attempt in range(retries):
+            try:
+                response_text = None
+                
+                if self.config['library'] == 'groq':
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": "You are an expert evaluator. Respond ONLY with valid JSON."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        max_tokens=500,
+                        temperature=0.0
+                    )
+                    response_text = response.choices[0].message.content.strip()
+                
+                elif self.config['library'] == 'openai':
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": "You are an expert evaluator. Respond ONLY with valid JSON."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        max_tokens=500,
+                        temperature=0.0
+                    )
+                    response_text = response.choices[0].message.content.strip()
+                
+                elif self.config['library'] == 'langchain':
+                    from langchain.schema import HumanMessage, SystemMessage
+                    messages = [
+                        SystemMessage(content="You are an expert evaluator. Respond ONLY with valid JSON."),
+                        HumanMessage(content=prompt)
+                    ]
+                    response = self.client.invoke(messages)
+                    response_text = response.content.strip()
+                
+                elif self.config['library'] == 'google-generativeai':
+                    response = self.client.generate_content(prompt)
+                    response_text = response.text.strip()
+                
+                elif self.config['library'] == 'anthropic':
+                    message = self.client.messages.create(
+                        model=self.model,
+                        max_tokens=1024,
+                        temperature=0.0,
+                        system="You are an expert evaluator. Respond ONLY with valid JSON.",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    response_text = message.content[0].text.strip()
+                
+                # Parse and validate response
+                scores = self._parse_and_validate(response_text)
+                scores['attempt'] = attempt + 1
+                scores['provider'] = self.provider
+                return scores
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"    ⚠️  Attempt {attempt + 1}/{retries} failed: {error_msg[:100]}")
+                
+                if "rate_limit" in error_msg.lower() or "429" in error_msg:
+                    time.sleep(60)
+                elif attempt < retries - 1:
+                    time.sleep(10)
+                else:
+                    return {"error": f"Failed after {retries} attempts: {error_msg[:200]}"}
+        
+        return {"error": "Evaluation failed"}
+    
+    def _parse_and_validate(self, text: str) -> Dict:
+        """Parse JSON and validate scores"""
+        
+        # Clean text
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'```json|```', '', text).strip()
+        
+        # Try to parse JSON
+        try:
+            # Find JSON block
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                
+                # Validate keys
+                required_keys = ['c1_factual_correctness', 'c2_literary_style', 
+                               'c3_accessibility', 'c4_faithfulness']
+                
+                if all(k in data for k in required_keys):
+                    # Validate and normalize scores
+                    for key in required_keys:
+                        try:
+                            data[key] = min(5, max(1, int(float(data[key]))))
+                        except:
+                            data[key] = None
+                    
+                    # Calculate overall_score
+                    valid_scores = [data[k] for k in required_keys if data[k] is not None]
+                    if len(valid_scores) == 4:
+                        data['overall_score'] = round(np.mean(valid_scores), 2)
+                        return data
+        
+        except Exception as e:
+            pass
+        
+        # Fallback: regex extraction
+        def extract_score(pattern):
+            match = re.search(pattern, text)
+            return int(match.group(1)) if match else None
+        
+        c1 = extract_score(r'"c1_factual_correctness"\s*:\s*(\d+)')
+        c2 = extract_score(r'"c2_literary_style"\s*:\s*(\d+)')
+        c3 = extract_score(r'"c3_accessibility"\s*:\s*(\d+)')
+        c4 = extract_score(r'"c4_faithfulness"\s*:\s*(\d+)')
+        
+        if all([c1, c2, c3, c4]):
+            overall = round(np.mean([c1, c2, c3, c4]), 2)
+            return {
+                "c1_factual_correctness": c1,
+                "c2_literary_style": c2,
+                "c3_accessibility": c3,
+                "c4_faithfulness": c4,
+                "overall_score": overall,
+                "manual_extraction": True
+            }
+        
+        return {"error": "JSON parsing failed", "raw_response": text[:500]}
+
+
+# ========== MAIN EVALUATION FUNCTION ==========
+
+def evaluate_narratives(
+    input_file: str,
+    output_file: str,
+    judge_provider: str = 'groq',
+    judge_model: Optional[str] = None,
+    narrative_columns: Optional[Dict[str, str]] = None,
+    save_interval: int = 5
+):
+    """
+    Evaluate all narratives from an Excel file
+    
+    Args:
+        input_file: Excel file with narratives
+        output_file: Output Excel file with evaluations
+        judge_provider: LLM provider for evaluation ('groq', 'openai', etc.)
+        judge_model: Specific model (optional)
+        narrative_columns: Dict of columns to evaluate
+        save_interval: Save interval
+    """
+    
+    print(f"📖 Reading {input_file}...")
+    print(f"🤖 Judge Provider: {judge_provider}")
+    if judge_model:
+        print(f"🎯 Judge Model: {judge_model}")
+    print()
+    
+    try:
+        df = pd.read_excel(input_file)
+    except Exception as e:
+        print(f"❌ Error reading file: {e}")
+        return
+    
+    print(f"✅ Found {len(df)} objects\n")
+    
+    # Initialize judge
+    evaluator = JudgeEvaluator(provider=judge_provider, model=judge_model)
+    
+    # Columns to evaluate
+    cols_to_eval = narrative_columns or NARRATIVE_COLUMNS
+    
+    # Identify existing columns
+    existing_cols = {k: v for k, v in cols_to_eval.items() if k in df.columns}
+    
+    if not existing_cols:
+        print(f"❌ No narrative columns found. Available: {df.columns.tolist()}")
+        return
+    
+    print(f"📊 Evaluating {len(existing_cols)} narrative columns:")
+    for col, label in existing_cols.items():
+        print(f"   - {col} → {label}")
+    print()
+    
+    # Prepare result columns
+    for label in existing_cols.values():
+        for metric in ['C1', 'C2', 'C3', 'C4', 'Overall', 'Error']:
+            col_name = f"{label}_{metric}"
+            if col_name not in df.columns:
+                df[col_name] = None
+    
+    # Statistics
+    total_evals = len(df) * len(existing_cols)
+    completed = 0
+    errors = 0
+    start_time = time.time()
+    
+    # Evaluate each object
+    for idx, row in df.iterrows():
+        obj_id = row.get('Object ID', f'Object_{idx}')
+        description = row.get('Description', '')
+        
+        print(f"\n{'='*60}")
+        print(f"📦 Object {idx + 1}/{len(df)}: {obj_id}")
+        print(f"{'='*60}")
+        
+        # Evaluate each narrative
+        for narrative_col, label in existing_cols.items():
+            narrative = row.get(narrative_col, '')
+            
+            print(f"  📖 Evaluating {label}...", end=' ', flush=True)
+            
+            # Check if already evaluated
+            overall_col = f"{label}_Overall"
+            if pd.notna(df.at[idx, overall_col]) and df.at[idx, overall_col] != '':
+                print("⏭️  Skip (already done)")
+                completed += 1
+                continue
+            
+            # Evaluate
+            scores = evaluator.evaluate(narrative, description)
+            
+            # Save scores
+            if 'overall_score' in scores:
+                df.at[idx, f"{label}_C1"] = scores.get('c1_factual_correctness')
+                df.at[idx, f"{label}_C2"] = scores.get('c2_literary_style')
+                df.at[idx, f"{label}_C3"] = scores.get('c3_accessibility')
+                df.at[idx, f"{label}_C4"] = scores.get('c4_faithfulness')
+                df.at[idx, f"{label}_Overall"] = scores.get('overall_score')
+                print(f"✅ Score: {scores['overall_score']:.2f}")
+            else:
+                df.at[idx, f"{label}_Error"] = scores.get('error', 'Unknown error')
+                errors += 1
+                print(f"❌ Error: {scores.get('error', 'Unknown')[:50]}")
+            
+            completed += 1
+            
+            # Pause between requests
+            time.sleep(2)
+        
+        # Periodic save
+        if (idx + 1) % save_interval == 0:
+            elapsed = time.time() - start_time
+            avg_time = elapsed / completed if completed > 0 else 0
+            remaining = (total_evals - completed) * avg_time
+            
+            print(f"\n  💾 Checkpoint ({completed}/{total_evals} evaluations)")
+            print(f"  ⏱️  {avg_time:.1f}s/eval - {remaining/60:.1f}m remaining")
+            
+            try:
+                df.to_excel(output_file, index=False)
+                print(f"  ✅ Saved - Errors: {errors}\n")
+            except Exception as e:
+                print(f"  ⚠️  Save error: {e}\n")
+    
+    # Final save
+    print(f"\n💾 Final save to {output_file}...")
+    try:
+        df.to_excel(output_file, index=False, engine='openpyxl')
+        
+        # Format file
+        wb = load_workbook(output_file)
+        ws = wb.active
+        
+        # Column widths
+        ws.column_dimensions['A'].width = 8
+        ws.column_dimensions['B'].width = 25
+        ws.column_dimensions['C'].width = 80
+        
+        # Header style
+        for cell in ws[1]:
+            cell.font = Font(bold=True, size=11)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+        
+        # Score columns
+        for col in range(4, ws.max_column + 1):
+            ws.column_dimensions[ws.cell(1, col).column_letter].width = 12
+        
+        wb.save(output_file)
+        
+        # Final statistics
+        total_time = time.time() - start_time
+        
+        print(f"\n✅ Complete!")
+        print(f"📊 Summary:")
+        print(f"   Total evaluations: {completed}")
+        print(f"   Errors: {errors}")
+        print(f"   Success rate: {((completed-errors)/completed)*100:.1f}%")
+        print(f"   Time: {total_time/60:.1f}m")
+        print(f"   Avg: {total_time/completed:.1f}s/eval")
+        
+        # Calculate statistics per criterion
+        print(f"\n📈 Score Statistics:")
+        for label in existing_cols.values():
+            scores = df[f"{label}_Overall"].dropna()
+            if len(scores) > 0:
+                print(f"   {label}: Mean={scores.mean():.2f}, Min={scores.min():.2f}, Max={scores.max():.2f}")
+        
+    except Exception as e:
+        print(f"❌ Save error: {e}")
+
+
+# ========== UTILITY FUNCTION: COMPARE MODELS ==========
+
+def compare_models(results_file: str):
+    """Analyze and compare performance of different models"""
+    
+    df = pd.read_excel(results_file)
+    
+    print("\n" + "="*70)
+    print("📊 MODEL COMPARISON ANALYSIS")
+    print("="*70)
+    
+    # Find all score columns
+    score_cols = [col for col in df.columns if col.endswith('_Overall')]
+    
+    if not score_cols:
+        print("No score columns found!")
+        return
+    
+    # Statistics per model
+    results = []
+    for col in score_cols:
+        model_name = col.replace('_Overall', '')
+        scores = df[col].dropna()
+        
+        if len(scores) > 0:
+            results.append({
+                'Model': model_name,
+                'Count': len(scores),
+                'Mean': scores.mean(),
+                'Std': scores.std(),
+                'Min': scores.min(),
+                'Max': scores.max(),
+                'Median': scores.median()
+            })
+    
+    # Display table
+    comparison_df = pd.DataFrame(results).sort_values('Mean', ascending=False)
+    print(comparison_df.to_string(index=False))
+    
+    # Save analysis
+    comparison_file = results_file.replace('.xlsx', '_comparison.xlsx')
+    comparison_df.to_excel(comparison_file, index=False)
+    print(f"\n✅ Comparison saved to: {comparison_file}")
+    
+    return comparison_df
+
+
+# ========== BATCH EVALUATION WITH MULTIPLE JUDGES ==========
+
+def evaluate_with_multiple_judges(
+    input_file: str,
+    output_prefix: str,
+    judge_providers: List[str] = ['groq', 'openai', 'anthropic'],
+    save_interval: int = 5
+):
+    """
+    Evaluate narratives using multiple judge models for consensus
+    
+    Args:
+        input_file: Excel file with narratives
+        output_prefix: Prefix for output files
+        judge_providers: List of LLM providers to use as judges
+        save_interval: Save interval
+    """
+    
+    print(f"🎯 Multi-Judge Evaluation")
+    print(f"📖 Input: {input_file}")
+    print(f"🤖 Judges: {', '.join(judge_providers)}\n")
+    
+    # Evaluate with each judge
+    for provider in judge_providers:
+        output_file = f"{output_prefix}_{provider}.xlsx"
+        print(f"\n{'='*70}")
+        print(f"Starting evaluation with {provider.upper()}")
+        print(f"{'='*70}\n")
+        
+        try:
+            evaluate_narratives(
+                input_file=input_file,
+                output_file=output_file,
+                judge_provider=provider,
+                save_interval=save_interval
+            )
+            print(f"\n✅ Completed evaluation with {provider}")
+        except Exception as e:
+            print(f"\n❌ Error with {provider}: {e}")
+        
+        # Wait between judges to avoid rate limits
+        if provider != judge_providers[-1]:
+            print(f"\n⏳ Waiting 30s before next judge...")
+            time.sleep(30)
+    
+    print(f"\n{'='*70}")
+    print(f"✅ All evaluations completed!")
+    print(f"{'='*70}")
+
+
+# ========== MAIN ==========
+
+if __name__ == "__main__":
+    
+    # EXAMPLE 1: Evaluate narratives with a single judge
+    evaluate_narratives(
+        input_file="catalog_with_stories.xlsx",
+        output_file="catalog_evaluated.xlsx",
+        judge_provider='groq',  # Can be: groq, openai, gemini, anthropic, phi4
+        judge_model=None,  # Uses default model
+        save_interval=5
+    )
+    
+    # EXAMPLE 2: Evaluate with multiple judges for consensus
+    # evaluate_with_multiple_judges(
+    #     input_file="catalog_with_stories.xlsx",
+    #     output_prefix="catalog_evaluated",
+    #     judge_providers=['groq', 'openai', 'anthropic'],
+    #     save_interval=5
+    # )
+    
+    # EXAMPLE 3: Compare results
+    # compare_models("catalog_evaluated.xlsx")
